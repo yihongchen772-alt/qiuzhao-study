@@ -244,7 +244,8 @@ mjx-assistive-mml{display:none!important}
 .aipanel{position:fixed;top:0;right:0;bottom:0;width:min(460px,100vw);z-index:55;background:var(--surface);border-left:1px solid var(--line);box-shadow:-12px 0 32px rgb(0 0 0 / .18);display:flex;flex-direction:column;padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) 0}
 .ai-h{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line)}
 .ai-h b{font-family:var(--f-display);font-size:17px;white-space:nowrap}
-.ai-h .chip{cursor:pointer;border:0}
+.ai-h .chip{cursor:pointer;border:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ai-h .btn{white-space:nowrap;flex:none}
 .ai-sp{flex:1}
 .ai-body{flex:1;min-height:0;overflow-y:auto;padding:16px}
 .ai-log{display:flex;flex-direction:column;gap:16px}
@@ -273,6 +274,10 @@ mjx-assistive-mml{display:none!important}
 .ai-mod input{margin-top:6px}
 .ai-mod small{display:block;color:var(--muted);font-size:12.5px;line-height:1.5}
 .ai-set .note{color:var(--muted);font-size:12.5px;margin-top:12px}
+.ai-prov{border-top:1px solid var(--line);margin-top:16px;padding-top:12px}
+.ai-prov h4{margin:0;font-size:15px}
+.ai-prov h4 small{color:var(--muted);font-weight:400;font-size:12px;margin-left:8px}
+.ai-prov .note{margin-top:4px}
 
 @media (max-width:1100px){.page{grid-template-columns:220px minmax(0,1fr)} .toc{display:none}}
 @media (max-width:860px){
@@ -1045,20 +1050,43 @@ document.addEventListener('click', e => { if (!e.target.closest('.search')) sres
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && !dlg.hidden) close(); });
 })();
 
-// ---------- 学习助手: Claude with the viewer's own API key, called straight from this page ----------
-// The key and model choice live only in this browser's localStorage (never synced); requests go to api.anthropic.com.
+// ---------- 学习助手: Claude / DeepSeek / Gemini with the viewer's own API key, called straight from this page ----------
+// Keys and the model choice live only in this browser's localStorage (never synced); requests go straight to each provider.
 (function () {
   if (!window.AI_ON) return;
   const LSK = {
     get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
     set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) {} },
   };
-  // price: $ per million input / output tokens
-  const MODELS = [
-    { id: 'claude-opus-5-5', name: 'Opus 5.5', note: '讲得最透，最贵。每问约 $0.05', price: [4, 20] },
-    { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5', note: '讲题完全够用，不到 Opus 一半价格。每问约 $0.02', price: [2, 10] },
-    { id: 'claude-haiku-5-5', name: 'Haiku 5.5', note: '最便宜，适合语法、报错这类简单问题。每问不到 $0.002', price: [0.1, 0.5] },
+  // price(now) → [$ per million input, $ per million output]. DeepSeek is half price off-peak
+  // (peak = 01–04 and 06–10 UTC on weekdays); some Gemini prices change on a set date.
+  const peak = d => { const h = d.getUTCHours(), w = d.getUTCDay(); return w >= 1 && w <= 5 && (h >= 1 && h < 4 || h >= 6 && h < 10); };
+  const until = (iso, a, b) => d => d < new Date(iso) ? a : b;
+  const PROVIDERS = [
+    { id: 'anthropic', name: 'Claude', org: 'Anthropic', keyPh: 'sk-ant-…', keyRe: /^sk-ant-/, url: 'https://console.anthropic.com/settings/keys', host: 'api.anthropic.com',
+      tip: '需要能访问 Anthropic 的网络。建议在 Console 的 Limits 页面给账户设每月花费上限。',
+      models: [
+        { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', note: '讲得最透，最贵。每问约 $0.05', price: () => [4, 20] },
+        { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', note: '讲题完全够用，不到 Opus 一半价格。每问约 $0.02', price: () => [2, 10] },
+        { id: 'claude-haiku-5-5', name: 'Claude Haiku 5.5', note: '最便宜，适合语法、报错这类简单问题。每问不到 $0.002', price: () => [0.1, 0.5] },
+      ] },
+    { id: 'deepseek', name: 'DeepSeek', org: 'DeepSeek', keyPh: 'sk-…', keyRe: /^sk-/, url: 'https://platform.deepseek.com/api_keys', host: 'api.deepseek.com',
+      tip: '国内网络可以直接访问。北京时间工作日 9–12 点、14–18 点是高峰价，其他时间半价。',
+      models: [
+        { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', note: '推理更强。每问约 $0.01–0.02', price: d => peak(d) ? [1.32, 3.96] : [0.66, 1.98], hit: d => peak(d) ? 0.044 : 0.022 },
+        { id: 'deepseek-flash', name: 'DeepSeek Flash', note: '很便宜、速度快。每问约 $0.005', price: d => peak(d) ? [0.3, 1.2] : [0.15, 0.6], hit: d => peak(d) ? 0.006 : 0.003 },
+      ] },
+    { id: 'gemini', name: 'Gemini', org: 'Google', keyPh: 'AIza…', keyRe: null, url: 'https://aistudio.google.com/apikey', host: 'generativelanguage.googleapis.com',
+      tip: '需要能访问 Google 的网络。Flash 和 Flash-Lite 有免费额度（有次数限制；免费层的对话可能被 Google 用来改进产品），用免费额度时下面显示的费用不会真的扣。',
+      models: [
+        { id: 'gemini-4-argon', name: 'Gemini 4 Argon', note: 'Google 的旗舰推理模型，没有免费额度。每问约 $0.04，12 月 1 日起价格翻倍', price: until('2026-12-01T00:00:00Z', [2, 10], [4, 20]) },
+        { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', note: '有免费额度；付费每问约 $0.015，2027 年 1 月起价格翻倍', price: until('2027-01-01T00:00:00Z', [0.75, 3.75], [1.5, 7.5]) },
+        { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash-Lite', note: '有免费额度，最快最便宜；付费每问约 $0.006', price: () => [0.3, 2.5] },
+      ] },
   ];
+  const ALL = PROVIDERS.flatMap(p => p.models.map(m => ({ ...m, prov: p })));
+  if (LSK.get('qz-ai-key') && !LSK.get('qz-ai-key-anthropic')) { LSK.set('qz-ai-key-anthropic', LSK.get('qz-ai-key')); }
+  LSK.set('qz-ai-key', null);    // the single-provider key from the first version
   const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@0.135.0/+esm';
   const MD_URL = 'https://cdnjs.cloudflare.com/ajax/libs/markdown-it/13.0.2/markdown-it.min.js';
   const SYSTEM = `你是「秋招刷题站」里的学习助手，帮用户解决学习中的困惑。用户在准备 2027 届秋招，目标是运动控制、机器人、强化学习方向的算法岗。网站内容包括 Python 基础、力扣 Hot100（用 Python 解题）、PyTorch、强化学习、运动控制、Isaac Lab、ROS 2 和面试八股。
@@ -1079,14 +1107,16 @@ document.addEventListener('click', e => { if (!e.target.closest('.search')) sres
 网站里的代码环境：浏览器里的 Python（Pyodide）。力扣题写在 class Solution 里；测试用 check(实际, 期望)；链表、树用 build_list(列表)、build_tree(层序列表) 构造，list_to_arr 把链表转回列表。`;
 
   const fab = $('#aifab'), sel = $('#aisel'), panel = $('#aipanel'), bodyEl = $('#ai-body'), input = $('#ai-in'), ctxEl = $('#ai-ctx'), sendBtn = $('#ai-send');
-  let msgs = [];       // API history; assistant turns keep their full content blocks (thinking blocks must go back unchanged)
+  // provider-neutral history: { role, text } plus, for assistant turns, { prov, raw } = Claude content blocks or Gemini parts,
+  // which go back unchanged to the same provider (they carry thinking / thought signatures); other providers get the text
+  let msgs = [];
   let lastCtx = '';    // background already sent in this conversation, so it is not repeated
   let pin = null;      // { quote, node, box } the next question is about
-  let pendingSel = null, stream = null, Anthropic = null, md = null, view = 'chat';
+  let pendingSel = null, cancel = null, busy = false, Anthropic = null, md = null, view = 'chat';
   const log = document.createElement('div'), setv = document.createElement('div');   // chat log and settings, swapped in the body
   log.className = 'ai-log'; bodyEl.append(log, setv);
-  const key = () => LSK.get('qz-ai-key') || '';
-  const model = () => MODELS.find(m => m.id === LSK.get('qz-ai-model')) || MODELS[0];
+  const model = () => ALL.find(m => m.id === LSK.get('qz-ai-model')) || ALL[0];
+  const keyOf = (pid = model().prov.id) => LSK.get('qz-ai-key-' + pid) || '';
   fab.hidden = false;
 
   // ----- context: what the viewer is looking at -----
@@ -1149,8 +1179,8 @@ document.addEventListener('click', e => { if (!e.target.closest('.search')) sres
       pin = (opts.quote || opts.box) ? { quote: opts.quote || '', node: opts.node || opts.box, box: opts.box || null } : pin;
       if (opts.q && !input.value.trim()) input.value = opts.q;
     }
-    if (!key()) settings(); else chat();
-    if (matchMedia('(min-width: 861px)').matches || opts) setTimeout(() => (view === 'chat' ? input : $('#ai-key'))?.focus(), 0);
+    if (!keyOf()) settings(); else chat();
+    if (matchMedia('(min-width: 861px)').matches || opts) setTimeout(() => (view === 'chat' ? input : $(`#ai-key-${model().prov.id}`))?.focus(), 0);
   }
   function close() { panel.hidden = true; fab.hidden = false; }
   window.aiAsk = open;
@@ -1164,32 +1194,29 @@ document.addEventListener('click', e => { if (!e.target.closest('.search')) sres
   function intro() {
     return `<div class="ai-intro"><p><b>哪里看不懂就问。</b>选中讲义里的一句话会出现「问助手」按钮；代码框下面也有「问助手」。提问时会自动附上你正在看的小节和编辑区里的代码，不用自己复制。</p>
       <p>想让它只给提示、不直接给答案，就在问题里说一声。刷新页面后对话会清空。</p>
-      ${key() ? '' : '<p><b>还没设置 API key。</b>点右上角 ⚙ 设置；或者先用「复制问题」，粘贴到 Claude App 里问。</p>'}</div>`;
+      ${keyOf() ? '' : `<p><b>还没填 ${model().prov.name} 的 API key。</b>点右上角 ⚙ 设置；或者先用「复制问题」，粘贴到 Claude、DeepSeek 或 Gemini 的网页版里问。</p>`}</div>`;
   }
   function settings() {
     view = 'set'; $('#ai-foot').hidden = true; $('#ai-model').textContent = model().name;
-    const k = key(), cur = model().id;
     log.hidden = true; setv.hidden = false;
+    const cur = model().id, now = new Date(), any = PROVIDERS.some(p => keyOf(p.id));
     setv.innerHTML = `<div class="ai-set"><h3>设置</h3>
-      <p>助手用<b>你自己的 Anthropic API key</b> 调用 Claude，按用量计费，费用记在你的 Anthropic 账户上。</p>
-      <ol><li>打开 <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>，注册并充值。</li>
-        <li>创建一个 API key（<span class="mono">sk-ant-</span> 开头），粘贴到下面。</li>
-        <li>建议在 Console 的 Limits 页面给账户设一个每月花费上限。</li></ol>
-      <label class="f" for="ai-key">API key</label>
-      <input id="ai-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…" value="${esc(k)}">
-      <label class="f">模型</label>
-      ${MODELS.map(m => `<label class="ai-mod"><input type="radio" name="ai-m" value="${m.id}" ${m.id === cur ? 'checked' : ''}><span><b>Claude ${m.name}</b><small>${m.note}<br>输入 $${m.price[0]} / 输出 $${m.price[1]}，每百万 token</small></span></label>`).join('')}
-      <p class="note">key 只保存在这台设备的浏览器里，提问时直接发给 api.anthropic.com，不会上传到本站，也不会同步到账号云端。用公共电脑时，用完点「清除 key」。需要能访问 api.anthropic.com 的网络。</p>
-      <div class="ai-row" style="margin-top:12px"><button class="btn primary sm" data-ai="save">保存</button>${k ? '<button class="btn sm" data-ai="clear">清除 key</button>' : ''}<button class="btn sm" data-ai="back">返回</button></div>
+      <p>助手用<b>你自己的 API key</b> 调用模型，按用量计费，费用记在你自己的账户上。三家选一家就行：填那家的 key，再选它的一个模型。</p>
+      ${PROVIDERS.map(p => `<section class="ai-prov"><h4>${p.name}<small>${p.org}</small></h4>
+        <p class="note">在 <a href="${p.url}" target="_blank" rel="noopener">${p.url.split('/')[2]}</a> 注册、充值、创建 key。${p.tip}</p>
+        <label class="f" for="ai-key-${p.id}">${p.name} API key</label>
+        <input id="ai-key-${p.id}" type="password" autocomplete="off" spellcheck="false" placeholder="${p.keyPh}" value="${esc(keyOf(p.id))}">
+        ${p.models.map(m => { const [pi, po] = m.price(now); return `<label class="ai-mod"><input type="radio" name="ai-m" value="${m.id}" ${m.id === cur ? 'checked' : ''}><span><b>${m.name}</b><small>${m.note}<br>现在：输入 $${pi} / 输出 $${po}，每百万 token</small></span></label>`; }).join('')}
+      </section>`).join('')}
+      <p class="note">key 只保存在这台设备的浏览器里，提问时直接发给对应的厂商（${PROVIDERS.map(p => p.host).join('、')}），不会上传到本站，也不会同步到账号云端。用公共电脑时，用完点「清除所有 key」。</p>
+      <div class="ai-row" style="margin-top:12px"><button class="btn primary sm" data-ai="save">保存</button>${any ? '<button class="btn sm" data-ai="clear">清除所有 key</button>' : ''}<button class="btn sm" data-ai="back">返回</button></div>
       <p class="note" id="ai-setmsg"></p></div>`;
   }
-
   // ----- rendering -----
   function loadScript(src) {
     return new Promise((ok, bad) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = () => bad(new Error('加载失败：' + src)); document.head.append(s); });
   }
-  async function libs() {
-    if (!Anthropic) Anthropic = (await import(SDK_URL)).default;
+  async function mdLib() {
     if (!md) {
       if (!window.markdownit) await loadScript(MD_URL);
       md = window.markdownit({ html: false, linkify: false, breaks: false });
@@ -1210,23 +1237,110 @@ document.addEventListener('click', e => { if (!e.target.closest('.search')) sres
     const d = new Date().toLocaleDateString('sv'); let s = {}; try { s = JSON.parse(LSK.get('qz-ai-spend') || '{}'); } catch (e) {}
     if (s.d !== d) s = { d, usd: 0 }; s.usd += usd; LSK.set('qz-ai-spend', JSON.stringify(s)); return s.usd;
   }
-  function errText(e) {
-    const st = e?.status, raw = e?.error?.error?.message || e?.message || String(e);
-    if (Anthropic?.APIUserAbortError && e instanceof Anthropic.APIUserAbortError) return '已停止。';
-    if (st === 401) return 'API key 无效。点右上角 ⚙ 检查一下有没有复制完整。';
-    if (st === 403) return '这个 key 没有权限调用 API。去 Console 检查 key 和账户状态。';
-    if (st === 404) return `当前 key 用不了 ${model().name}，在设置里换一个模型试试。`;
-    if (st === 400 && /credit|balance/i.test(raw)) return '账户余额不足，去 console.anthropic.com 充值后再试。';
-    if (st === 429) return '请求太频繁，或者到了账户的花费上限。稍等一会儿再试。';
-    if (st >= 500) return 'Claude 服务暂时繁忙，过一会儿再试。';
-    if (!st) return '连不上 api.anthropic.com。检查一下网络：需要能访问 Anthropic 的网络。\n' + raw;
+  function errText(e, m) {
+    const P = m.prov, st = e?.status, raw = e?.error?.error?.message || e?.message || String(e);
+    if (e?.name === 'AbortError' || Anthropic?.APIUserAbortError && e instanceof Anthropic.APIUserAbortError) return '已停止。';
+    if (st === 401 || st === 400 && /api.?key/i.test(raw)) return `${P.name} 的 API key 无效。点右上角 ⚙ 检查一下有没有复制完整。`;
+    if (st === 402 || st === 400 && /credit|balance|insufficient/i.test(raw)) return `账户余额不足，去 ${P.url.split('/')[2]} 充值后再试。`;
+    if (st === 403 && /location|region|country/i.test(raw)) return `${P.org} 不向你当前的网络所在地区提供服务，需要换网络。`;
+    if (st === 403) return `${P.name} 拒绝了请求，检查 key 的权限和账户状态。\n${raw}`;
+    if (st === 404) return `当前 key 用不了 ${m.name}，在设置里换一个模型试试。`;
+    if (st === 429) return '请求太频繁，或者用完了额度（免费额度也有次数限制）。稍等一会儿再试。';
+    if (st >= 500) return `${P.name} 服务暂时繁忙，过一会儿再试。`;
+    if (!st) return P.id === 'deepseek' ? `连不上 ${P.host}，检查一下网络。\n${raw}` : `连不上 ${P.host}。需要能访问 ${P.org} 的网络。\n${raw}`;
     return `出错了（${st}）：${raw}`;
+  }
+
+  // ----- the three providers: each streams text through onText and returns { raw, inTok, outTok, usd, stop, used } -----
+  async function* sseData(resp) {
+    const rd = resp.body.getReader(), dec = new TextDecoder(); let buf = '';
+    for (;;) {
+      const { value, done } = await rd.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).replace(/\r$/, ''); buf = buf.slice(i + 1);
+        if (line.startsWith('data:')) { const d = line.slice(5).trim(); if (d && d !== '[DONE]') yield JSON.parse(d); }
+      }
+    }
+  }
+  async function fail(resp) {
+    let msg = ''; try { const b = await resp.json(); msg = b.error?.message || JSON.stringify(b).slice(0, 300); } catch (e) {}
+    const err = new Error(msg || resp.statusText || 'HTTP ' + resp.status); err.status = resp.status; throw err;
+  }
+  async function askClaude(m, k, onText) {
+    if (!Anthropic) Anthropic = (await import(SDK_URL)).default;   // the SDK is only loaded for Claude
+    const client = new Anthropic({ apiKey: k, dangerouslyAllowBrowser: true });
+    const messages = msgs.map(x => x.role === 'user' ? { role: 'user', content: x.text }
+      : { role: 'assistant', content: x.prov === 'anthropic' && x.raw?.length ? x.raw : x.text || '（没有回答）' });
+    const params = { model: m.id, max_tokens: 16000, system: SYSTEM, messages, output_config: { effort: 'medium' }, cache_control: { type: 'ephemeral' } };
+    // Opus/Sonnet 5.5: if a safety classifier declines, the server retries on a fallback model instead of failing
+    const st = m.id === 'claude-haiku-5-5' ? client.messages.stream(params)
+      : client.beta.messages.stream({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' });
+    cancel = () => st.abort();
+    for await (const ev of st) if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') onText(ev.delta.text);
+    const fin = await st.finalMessage();
+    const used = ALL.find(x => fin.model?.startsWith(x.id)) || m, [pi, po] = used.price(new Date()), us = fin.usage || {};
+    const cr = us.cache_read_input_tokens || 0, cw = us.cache_creation_input_tokens || 0;
+    return { raw: fin.content, used: used.name, inTok: (us.input_tokens || 0) + cr + cw, outTok: us.output_tokens || 0,
+      usd: ((us.input_tokens || 0) * pi + cr * pi * 0.1 + cw * pi * 1.25 + (us.output_tokens || 0) * po) / 1e6,
+      stop: fin.stop_reason === 'refusal' ? '这个问题被安全策略拦下了，换个问法试试。' : fin.stop_reason === 'max_tokens' ? '回答太长被截断了，可以让它「接着说」。' : '' };
+  }
+  async function askDeepSeek(m, k, onText) {
+    const ctl = new AbortController(); cancel = () => ctl.abort();
+    const resp = await fetch('https://api.deepseek.com/chat/completions', {
+      method: 'POST', signal: ctl.signal, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + k },
+      body: JSON.stringify({ model: m.id, stream: true, stream_options: { include_usage: true }, max_tokens: 32000,
+        messages: [{ role: 'system', content: SYSTEM }, ...msgs.map(x => ({ role: x.role, content: x.text || '（没有回答）' }))] }),
+    });
+    if (!resp.ok) await fail(resp);
+    let u = {}, finish = '';
+    for await (const c of sseData(resp)) {
+      const ch = c.choices?.[0];
+      if (ch?.delta?.content) onText(ch.delta.content);      // reasoning_content (its thinking) is not shown
+      if (ch?.finish_reason) finish = ch.finish_reason;
+      if (c.usage) u = c.usage;
+    }
+    const now = new Date(), [pi, po] = m.price(now), hit = u.prompt_cache_hit_tokens || 0;
+    const miss = u.prompt_cache_miss_tokens ?? Math.max(0, (u.prompt_tokens || 0) - hit);
+    return { raw: null, used: m.name, inTok: hit + miss, outTok: u.completion_tokens || 0,
+      usd: (hit * m.hit(now) + miss * pi + (u.completion_tokens || 0) * po) / 1e6,
+      stop: finish === 'length' ? '回答太长被截断了，可以让它「接着说」。' : finish === 'content_filter' ? '回答被 DeepSeek 的内容审核拦下了，换个问法试试。'
+        : finish === 'insufficient_system_resource' ? 'DeepSeek 服务繁忙，回答中途停了，稍后再试。' : '' };
+  }
+  async function askGemini(m, k, onText) {
+    const ctl = new AbortController(); cancel = () => ctl.abort();
+    const contents = msgs.map(x => x.role === 'user' ? { role: 'user', parts: [{ text: x.text }] }
+      : { role: 'model', parts: x.prov === 'gemini' && x.raw?.length ? x.raw : [{ text: x.text || '（没有回答）' }] });
+    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m.id}:streamGenerateContent?alt=sse`, {
+      method: 'POST', signal: ctl.signal, headers: { 'Content-Type': 'application/json', 'x-goog-api-key': k },
+      body: JSON.stringify({ systemInstruction: { parts: [{ text: SYSTEM }] }, contents, generationConfig: { maxOutputTokens: 32000 } }),
+    });
+    if (!resp.ok) await fail(resp);
+    // keep the returned parts as they came (a part may carry a thoughtSignature); only plain text runs are merged
+    const parts = []; let u = {}, finish = '', blocked = '';
+    for await (const c of sseData(resp)) {
+      if (c.promptFeedback?.blockReason) blocked = c.promptFeedback.blockReason;
+      const cand = c.candidates?.[0];
+      for (const p of cand?.content?.parts || []) {
+        if (typeof p.text === 'string' && !p.thought) onText(p.text);
+        const last = parts[parts.length - 1], plainText = o => typeof o?.text === 'string' && Object.keys(o).length === 1;
+        if (plainText(p) && plainText(last)) last.text += p.text; else parts.push({ ...p });
+      }
+      if (cand?.finishReason) finish = cand.finishReason;
+      if (c.usageMetadata) u = c.usageMetadata;
+    }
+    const [pi, po] = m.price(new Date()), out = (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0);
+    return { raw: parts, used: m.name, inTok: u.promptTokenCount || 0, outTok: out, usd: ((u.promptTokenCount || 0) * pi + out * po) / 1e6,
+      stop: blocked ? `问题被 Gemini 的安全策略拦下了（${blocked}），换个问法试试。` : finish === 'MAX_TOKENS' ? '回答太长被截断了，可以让它「接着说」。'
+        : finish && finish !== 'STOP' ? `回答被中断了（${finish}），换个问法试试。` : '' };
   }
 
   // ----- asking -----
   async function send() {
-    const q = input.value.trim(); if (!q || stream) return;
-    if (!key()) { settings(); return; }
+    const q = input.value.trim(); if (!q || busy) return;
+    const m = model(), k = keyOf(m.prov.id);
+    if (!k) { settings(); $('#ai-setmsg').textContent = `选的是 ${m.name}，还没填 ${m.prov.name} 的 API key。`; return; }
     const g = gather();
     const content = g.text === lastCtx && msgs.length ? q : `${g.text}\n\n【我的问题】\n${q}`;
     if (log.querySelector('.ai-intro')) log.innerHTML = '';
@@ -1234,47 +1348,35 @@ document.addEventListener('click', e => { if (!e.target.closest('.search')) sres
     u.innerHTML = `${esc(q)}${content === q ? '' : `<small>附：${esc((pin?.quote ? ['选中的文字'] : []).concat(g.tags).join(' · '))}</small>`}`;
     const a = document.createElement('div'); a.className = 'ai-a doc'; a.innerHTML = '<p class="think">正在想…</p>';
     log.append(u, a); scrollEnd();
-    input.value = ''; pin = null; msgs.push({ role: 'user', content }); const sentCtx = g.text;
-    sendBtn.textContent = '停止'; sendBtn.dataset.ai = 'stop';
+    input.value = ''; pin = null; msgs.push({ role: 'user', text: content }); const sentCtx = g.text;
+    busy = true; sendBtn.textContent = '停止'; sendBtn.dataset.ai = 'stop';
     let text = '', raf = 0;
+    const onText = d => {
+      text += d;
+      if (!raf) raf = requestAnimationFrame(() => { raf = 0; const stick = bodyEl.scrollHeight - bodyEl.scrollTop - bodyEl.clientHeight < 80; render(a, text); if (stick) scrollEnd(); });
+    };
     try {
-      await libs();
-      const client = new Anthropic({ apiKey: key(), dangerouslyAllowBrowser: true });
-      const m = model();
-      const params = { model: m.id, max_tokens: 16000, system: SYSTEM, messages: msgs, output_config: { effort: 'medium' }, cache_control: { type: 'ephemeral' } };
-      // Opus/Sonnet 5.5: if a safety classifier declines, the server retries on a fallback model instead of failing
-      stream = m.id === 'claude-haiku-5-5' ? client.messages.stream(params)
-        : client.beta.messages.stream({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' });
-      for await (const ev of stream) {
-        if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') {
-          text += ev.delta.text;
-          if (!raf) raf = requestAnimationFrame(() => { raf = 0; const stick = bodyEl.scrollHeight - bodyEl.scrollTop - bodyEl.clientHeight < 80; render(a, text); if (stick) scrollEnd(); });
-        }
-      }
-      const fin = await stream.finalMessage();
-      cancelAnimationFrame(raf); render(a, text || '');
-      if (fin.stop_reason === 'refusal') a.insertAdjacentHTML('beforeend', '<p class="ai-err">这个问题被 Claude 的安全策略拦下了，换个问法试试。</p>');
-      if (fin.stop_reason === 'max_tokens') a.insertAdjacentHTML('beforeend', '<p class="ai-err">回答太长被截断了，可以让它「接着说」。</p>');
-      msgs.push({ role: 'assistant', content: fin.content }); lastCtx = sentCtx;
-      const used = MODELS.find(x => fin.model?.startsWith(x.id)) || m, us = fin.usage || {};
-      const usd = ((us.input_tokens || 0) * used.price[0] + (us.cache_read_input_tokens || 0) * used.price[0] * 0.1
-        + (us.cache_creation_input_tokens || 0) * used.price[0] * 1.25 + (us.output_tokens || 0) * used.price[1]) / 1e6;
+      await mdLib();
+      const r = await (m.prov.id === 'anthropic' ? askClaude : m.prov.id === 'deepseek' ? askDeepSeek : askGemini)(m, k, onText);
+      cancelAnimationFrame(raf); render(a, text);
+      if (r.stop) a.insertAdjacentHTML('beforeend', `<p class="ai-err">${esc(r.stop)}</p>`);
+      msgs.push({ role: 'assistant', text, prov: m.prov.id, raw: r.raw }); lastCtx = sentCtx;
       const kt = n => (n / 1000).toFixed(1) + 'k';
-      a.insertAdjacentHTML('beforeend', `<p class="ai-meta">${used.name} · 输入 ${kt((us.input_tokens || 0) + (us.cache_read_input_tokens || 0) + (us.cache_creation_input_tokens || 0))} / 输出 ${kt(us.output_tokens || 0)} tokens · 约 $${usd.toFixed(4)} · 今天累计约 $${spend(usd).toFixed(3)}</p>`);
+      a.insertAdjacentHTML('beforeend', `<p class="ai-meta">${esc(r.used)} · 输入 ${kt(r.inTok)} / 输出 ${kt(r.outTok)} tokens · 约 $${r.usd.toFixed(4)} · 今天累计约 $${spend(r.usd).toFixed(3)}</p>`);
       decorate(a);
     } catch (e) {
       cancelAnimationFrame(raf);
       msgs.pop(); lastCtx = '';          // keep the history valid; the background goes again with the next question
-      if (text) { render(a, text); decorate(a); } else a.innerHTML = '';
-      a.insertAdjacentHTML('beforeend', `<p class="ai-err">${esc(errText(e))}</p>`);
+      if (text && md) { render(a, text); decorate(a); } else a.innerHTML = '';
+      a.insertAdjacentHTML('beforeend', `<p class="ai-err">${esc(errText(e, m))}</p>`);
     } finally {
-      stream = null; sendBtn.textContent = '发送'; sendBtn.dataset.ai = 'send'; scrollEnd(); showCtx();
+      busy = false; cancel = null; sendBtn.textContent = '发送'; sendBtn.dataset.ai = 'send'; scrollEnd(); showCtx();
     }
   }
   async function copyAsk() {
     const q = input.value.trim() || '（在这里写你的问题）', g = gather();
     const t = `我在用「秋招刷题站」学习，Python 基础比较弱。请用中文、分步骤、配小例子给我讲清楚。\n\n${g.text}\n\n【我的问题】\n${q}`;
-    try { await navigator.clipboard.writeText(t); toast('已复制，粘贴到 Claude App 里就能问'); }
+    try { await navigator.clipboard.writeText(t); toast('已复制，粘贴到 Claude、DeepSeek 或 Gemini 的网页版里就能问'); }
     catch (e) { input.value = t; input.select(); toast('浏览器不让自动复制，已放进输入框，请手动复制'); }
   }
 
@@ -1284,18 +1386,22 @@ document.addEventListener('click', e => { if (!e.target.closest('.search')) sres
     const a = e.target.closest('[data-ai]')?.dataset.ai; if (!a) return;
     if (a === 'x') close();
     if (a === 'set') settings();
-    if (a === 'back') key() ? chat() : close();
-    if (a === 'new') { stream?.abort(); msgs = []; lastCtx = ''; log.innerHTML = ''; chat(); }
+    if (a === 'back') keyOf() ? chat() : close();
+    if (a === 'new') { cancel?.(); msgs = []; lastCtx = ''; log.innerHTML = ''; chat(); }
     if (a === 'send') send();
-    if (a === 'stop') stream?.abort();
+    if (a === 'stop') cancel?.();
     if (a === 'copy') copyAsk();
     if (a === 'unpin') { pin = null; showCtx(); }
-    if (a === 'clear') { LSK.set('qz-ai-key', null); settings(); $('#ai-setmsg').textContent = '已从这台设备上清除。'; }
+    if (a === 'clear') { PROVIDERS.forEach(p => LSK.set('qz-ai-key-' + p.id, null)); settings(); $('#ai-setmsg').textContent = '已从这台设备上清除所有 key。'; }
     if (a === 'save') {
-      const k = $('#ai-key').value.trim(), m = $('input[name=ai-m]:checked', setv)?.value;
-      if (k && !/^sk-ant-/.test(k)) { $('#ai-setmsg').textContent = '看起来不是 Anthropic 的 API key（应该以 sk-ant- 开头）。'; return; }
-      LSK.set('qz-ai-key', k || null); if (m) LSK.set('qz-ai-model', m);
-      if (!k) { $('#ai-setmsg').textContent = '还没填 key。'; return; }
+      const msg = s => { $('#ai-setmsg').textContent = s; };
+      for (const p of PROVIDERS) {
+        const v = $(`#ai-key-${p.id}`).value.trim();
+        if (v && p.keyRe && !p.keyRe.test(v)) return msg(`${p.name} 的 key 看起来不对（应该以 ${p.keyPh.replace('…', '')} 开头）。`);
+      }
+      PROVIDERS.forEach(p => LSK.set('qz-ai-key-' + p.id, $(`#ai-key-${p.id}`).value.trim() || null));
+      const id = $('input[name=ai-m]:checked', setv)?.value; if (id) LSK.set('qz-ai-model', id);
+      if (!keyOf()) return msg(`选的是 ${model().name}，还没填 ${model().prov.name} 的 API key。`);
       chat(); input.focus();
     }
   });
